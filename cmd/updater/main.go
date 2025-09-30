@@ -1,8 +1,7 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/cloudflare/cloudflare-go/v2"
+	"github.com/cloudflare/cloudflare-go/v2/dns"
+	"github.com/cloudflare/cloudflare-go/v2/option"
 )
 
 const (
@@ -54,32 +57,6 @@ type Config struct {
 	IPServices []string
 }
 
-// DNSRecord captures a Cloudflare DNS record response.
-type DNSRecord struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	TTL     int    `json:"ttl"`
-	Proxied bool   `json:"proxied"`
-}
-
-type listResponse struct {
-	Success bool        `json:"success"`
-	Errors  []apiError  `json:"errors"`
-	Result  []DNSRecord `json:"result"`
-}
-
-type updateResponse struct {
-	Success bool       `json:"success"`
-	Errors  []apiError `json:"errors"`
-}
-
-type apiError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
 func main() {
 	log.SetFlags(log.LstdFlags)
 
@@ -88,29 +65,41 @@ func main() {
 		log.Fatalf("configuration error: %v", err)
 	}
 
-	client := &http.Client{Timeout: defaultHTTPTimeout}
+	httpClient := &http.Client{Timeout: defaultHTTPTimeout}
 
-	ip, err := discoverIP(client, cfg.IPServices)
+	ip, err := discoverIP(httpClient, cfg.IPServices)
 	if err != nil {
 		log.Fatalf("failed to determine public IP: %v", err)
 	}
 	log.Printf("detected public IP: %s", ip)
 
-	record, err := fetchDNSRecord(client, cfg)
+	cfClient, err := newCloudflareClient(httpClient, cfg)
+	if err != nil {
+		log.Fatalf("failed to configure Cloudflare client: %v", err)
+	}
+
+	ctx := context.Background()
+
+	record, err := fetchDNSRecord(ctx, cfClient, cfg)
 	if err != nil {
 		log.Fatalf("failed to fetch DNS record: %v", err)
 	}
 
-	if record.Content == ip {
+	currentIP, err := extractARecordIP(record)
+	if err != nil {
+		log.Fatalf("unexpected DNS record content: %v", err)
+	}
+
+	if currentIP == ip {
 		log.Printf("Cloudflare record %s already up to date", record.Name)
 		return
 	}
 
-	if err := updateDNSRecord(client, cfg, record.ID, ip); err != nil {
+	if err := updateDNSRecord(ctx, cfClient, cfg, record.ID, ip); err != nil {
 		log.Fatalf("failed to update DNS record: %v", err)
 	}
 
-	log.Printf("successfully updated %s from %s to %s", record.Name, record.Content, ip)
+	log.Printf("successfully updated %s from %s to %s", record.Name, currentIP, ip)
 }
 
 func loadConfig() (Config, error) {
@@ -239,97 +228,62 @@ func discoverIP(client *http.Client, services []string) (string, error) {
 	return "", errors.New("unable to discover IPv4 address from configured services")
 }
 
-func fetchDNSRecord(client *http.Client, cfg Config) (DNSRecord, error) {
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=%s&name=%s", cfg.ZoneID, cfg.RecordType, cfg.RecordName)
+func newCloudflareClient(httpClient *http.Client, cfg Config) (*cloudflare.Client, error) {
+	options := []option.RequestOption{option.WithHTTPClient(httpClient)}
 
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return DNSRecord{}, err
+	switch cfg.AuthMethod {
+	case "token":
+		options = append(options, option.WithAPIToken(cfg.AuthKey))
+	case "global":
+		options = append(options, option.WithAPIKey(cfg.AuthKey), option.WithAPIEmail(cfg.AuthEmail))
+	default:
+		return nil, fmt.Errorf("unsupported auth method %q", cfg.AuthMethod)
 	}
 
-	applyAuthHeaders(req, cfg)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return DNSRecord{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return DNSRecord{}, fmt.Errorf("unexpected status %s", resp.Status)
-	}
-
-	var payload listResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return DNSRecord{}, err
-	}
-
-	if !payload.Success {
-		return DNSRecord{}, fmt.Errorf("cloudflare error: %v", payload.Errors)
-	}
-
-	if len(payload.Result) == 0 {
-		return DNSRecord{}, fmt.Errorf("no matching record for %s", cfg.RecordName)
-	}
-
-	return payload.Result[0], nil
+	return cloudflare.NewClient(options...), nil
 }
 
-func updateDNSRecord(client *http.Client, cfg Config, recordID, newIP string) error {
-	endpoint := fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", cfg.ZoneID, recordID)
-
-	body := map[string]any{
-		"type":    cfg.RecordType,
-		"name":    cfg.RecordName,
-		"content": newIP,
-		"ttl":     cfg.TTL,
-		"proxied": cfg.Proxied,
+func fetchDNSRecord(ctx context.Context, client *cloudflare.Client, cfg Config) (dns.Record, error) {
+	params := dns.RecordListParams{
+		ZoneID: cloudflare.String(cfg.ZoneID),
+		Name:   cloudflare.String(cfg.RecordName),
+		Type:   cloudflare.F(dns.RecordListParamsType(cfg.RecordType)),
 	}
 
-	payload, err := json.Marshal(body)
+	page, err := client.DNS.Records.List(ctx, params)
 	if err != nil {
-		return err
+		return dns.Record{}, err
 	}
 
-	req, err := http.NewRequest(http.MethodPatch, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return err
+	if len(page.Result) == 0 {
+		return dns.Record{}, fmt.Errorf("no matching record for %s", cfg.RecordName)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	applyAuthHeaders(req, cfg)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %s", resp.Status)
-	}
-
-	var result updateResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return err
-	}
-
-	if !result.Success {
-		return fmt.Errorf("cloudflare update failed: %v", result.Errors)
-	}
-
-	return nil
+	return page.Result[0], nil
 }
 
-func applyAuthHeaders(req *http.Request, cfg Config) {
-	if cfg.AuthEmail != "" {
-		req.Header.Set("X-Auth-Email", cfg.AuthEmail)
+func extractARecordIP(record dns.Record) (string, error) {
+	union := record.AsUnion()
+	aRecord, ok := union.(dns.ARecord)
+	if !ok {
+		return "", fmt.Errorf("record type %q is not supported", record.Type)
 	}
 
-	if cfg.AuthMethod == "global" {
-		req.Header.Set("X-Auth-Key", cfg.AuthKey)
-		return
+	return strings.TrimSpace(aRecord.Content), nil
+}
+
+func updateDNSRecord(ctx context.Context, client *cloudflare.Client, cfg Config, recordID, newIP string) error {
+	params := dns.RecordUpdateParams{
+		ZoneID: cloudflare.String(cfg.ZoneID),
+		Record: dns.ARecordParam{
+			Name:    cloudflare.String(cfg.RecordName),
+			Content: cloudflare.String(newIP),
+			Type:    cloudflare.F(dns.ARecordTypeA),
+			TTL:     cloudflare.F(dns.TTL(float64(cfg.TTL))),
+			Proxied: cloudflare.F(cfg.Proxied),
+		},
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cfg.AuthKey)
+	_, err := client.DNS.Records.Update(ctx, recordID, params)
+	return err
 }

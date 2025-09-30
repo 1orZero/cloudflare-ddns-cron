@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -113,37 +114,57 @@ func TestDiscoverIPAllFail(t *testing.T) {
 }
 
 func TestFetchDNSRecord(t *testing.T) {
-	response := listResponse{
-		Success: true,
-		Result: []DNSRecord{{
-			ID:      "record-id",
-			Type:    "A",
-			Name:    "example.com",
-			Content: "198.51.100.2",
-			TTL:     120,
-		}},
+	responsePayload := map[string]any{
+		"success":  true,
+		"errors":   []any{},
+		"messages": []any{},
+		"result": []map[string]any{
+			{
+				"id":          "record-id",
+				"type":        "A",
+				"name":        "example.com",
+				"content":     "198.51.100.2",
+				"proxied":     false,
+				"proxiable":   true,
+				"comment":     "",
+				"tags":        []any{},
+				"ttl":         120,
+				"data":        map[string]any{},
+				"priority":    0,
+				"created_on":  "2024-01-01T00:00:00Z",
+				"modified_on": "2024-01-01T00:00:00Z",
+			},
+		},
+		"result_info": map[string]any{
+			"page":     1,
+			"per_page": 1,
+		},
 	}
-	payload, err := json.Marshal(response)
+	payload, err := json.Marshal(responsePayload)
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
 	}
 
 	var capturedAuth string
-	var capturedQuery string
 
-	client := &http.Client{
+	httpClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			capturedAuth = req.Header.Get("Authorization")
-			capturedQuery = req.URL.RawQuery
 			expectedPath := "/client/v4/zones/zone-id/dns_records"
 			if req.URL.Path != expectedPath {
 				t.Fatalf("unexpected path %s", req.URL.Path)
 			}
-			return &http.Response{
+			query := req.URL.Query()
+			if query.Get("type") != "A" || query.Get("name") != "example.com" {
+				t.Fatalf("unexpected query %s", req.URL.RawQuery)
+			}
+			resp := &http.Response{
 				StatusCode: http.StatusOK,
 				Body:       io.NopCloser(bytes.NewReader(payload)),
 				Header:     make(http.Header),
-			}, nil
+			}
+			resp.Header.Set("Content-Type", "application/json")
+			return resp, nil
 		}),
 	}
 
@@ -155,7 +176,12 @@ func TestFetchDNSRecord(t *testing.T) {
 		RecordType: "A",
 	}
 
-	record, err := fetchDNSRecord(client, cfg)
+	client, err := newCloudflareClient(httpClient, cfg)
+	if err != nil {
+		t.Fatalf("unexpected client error: %v", err)
+	}
+
+	record, err := fetchDNSRecord(context.Background(), client, cfg)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -166,16 +192,18 @@ func TestFetchDNSRecord(t *testing.T) {
 	if capturedAuth != "Bearer token-value" {
 		t.Fatalf("unexpected auth header %s", capturedAuth)
 	}
-	if capturedQuery != "type=A&name=example.com" {
-		t.Fatalf("unexpected query %s", capturedQuery)
+	if ip, err := extractARecordIP(record); err != nil || ip != "198.51.100.2" {
+		t.Fatalf("unexpected record content: %v %s", err, ip)
 	}
 }
 
 func TestUpdateDNSRecord(t *testing.T) {
-	client := &http.Client{
+	var receivedBody []byte
+
+	httpClient := &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if req.Method != http.MethodPatch {
-				t.Fatalf("expected PATCH, got %s", req.Method)
+			if req.Method != http.MethodPut {
+				t.Fatalf("expected PUT, got %s", req.Method)
 			}
 			if req.Header.Get("X-Auth-Key") != "global-key" {
 				t.Fatalf("expected global auth key header")
@@ -183,28 +211,30 @@ func TestUpdateDNSRecord(t *testing.T) {
 			if req.Header.Get("X-Auth-Email") != "user@example.com" {
 				t.Fatalf("expected auth email header")
 			}
-			body, err := io.ReadAll(req.Body)
+			var err error
+			receivedBody, err = io.ReadAll(req.Body)
 			if err != nil {
 				t.Fatalf("read body err: %v", err)
 			}
-			var payload map[string]any
-			if err := json.Unmarshal(body, &payload); err != nil {
-				t.Fatalf("json unmarshal err: %v", err)
+			responsePayload := map[string]any{
+				"success":  true,
+				"errors":   []any{},
+				"messages": []any{},
+				"result": map[string]any{
+					"id": "record-id",
+				},
 			}
-			if payload["content"] != "198.51.100.3" {
-				t.Fatalf("unexpected content %v", payload["content"])
+			body, err := json.Marshal(responsePayload)
+			if err != nil {
+				t.Fatalf("marshal response err: %v", err)
 			}
-			if payload["proxied"] != true {
-				t.Fatalf("expected proxied flag true")
-			}
-			if payload["ttl"] != float64(120) {
-				t.Fatalf("expected ttl 120, got %v", payload["ttl"])
-			}
-			return &http.Response{
+			resp := &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(bytes.NewBufferString(`{"success":true}`)),
+				Body:       io.NopCloser(bytes.NewReader(body)),
 				Header:     make(http.Header),
-			}, nil
+			}
+			resp.Header.Set("Content-Type", "application/json")
+			return resp, nil
 		}),
 	}
 
@@ -219,8 +249,27 @@ func TestUpdateDNSRecord(t *testing.T) {
 		Proxied:    true,
 	}
 
-	if err := updateDNSRecord(client, cfg, "record-id", "198.51.100.3"); err != nil {
+	client, err := newCloudflareClient(httpClient, cfg)
+	if err != nil {
+		t.Fatalf("unexpected client error: %v", err)
+	}
+
+	if err := updateDNSRecord(context.Background(), client, cfg, "record-id", "198.51.100.3"); err != nil {
 		t.Fatalf("expected success, got %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(receivedBody, &payload); err != nil {
+		t.Fatalf("json unmarshal err: %v", err)
+	}
+	if payload["content"] != "198.51.100.3" {
+		t.Fatalf("unexpected content %v", payload["content"])
+	}
+	if payload["proxied"] != true {
+		t.Fatalf("expected proxied flag true")
+	}
+	if payload["ttl"] != float64(120) {
+		t.Fatalf("expected ttl 120, got %v", payload["ttl"])
 	}
 }
 

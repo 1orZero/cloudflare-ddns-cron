@@ -1,6 +1,6 @@
 module github.com/derek/cloudflare-ddns-cron
 
-go 1.21.5
+go 1.25.1
 
 require github.com/cloudflare/cloudflare-go/v2 v2.4.0
 

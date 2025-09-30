@@ -4,7 +4,7 @@ This repository ships a small Go binary that keeps a single Cloudflare DNS A rec
 
 ## Requirements
 
-- Go 1.25.1 to build the binary locally (a prebuilt binary can be used on any platform supported by Go).
+- Go 1.25.1 or newer to build the binary locally (a prebuilt binary can be used on any platform supported by Go).
 - A Cloudflare API *token* with **Zone → DNS → Edit** permission scoped to the zone that owns the record you want to manage (global API keys are not required or recommended).
 - Outbound HTTPS access to the public-IP services you configure and to `api.cloudflare.com`.
 

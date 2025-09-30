@@ -1,0 +1,33 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+*.test
+*.out
+
+# Dependency and workspace files
+vendor/
+go.work
+go.work.sum
+
+# Build outputs
+bin/
+
+# IDE/editor folders
+.idea/
+.vscode/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local build artifacts
+.gocache/
+.tmp/

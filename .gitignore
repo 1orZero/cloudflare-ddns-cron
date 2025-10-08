@@ -14,8 +14,6 @@ vendor/
 go.work
 go.work.sum
 
-# Build outputs
-bin/
 
 # IDE/editor folders
 .idea/

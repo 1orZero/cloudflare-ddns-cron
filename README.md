@@ -13,19 +13,19 @@ This repository ships a small Go binary that keeps a single Cloudflare DNS A rec
 Set these before running the binary (for example in your shell profile, systemd unit, or scheduler configuration):
 
 ```
-CF_AUTH_METHOD=token                # optional but recommended; defaults to "token"
-CF_AUTH_KEY=<cloudflare_api_token>  # required
-CF_ZONE_ID=<zone_id>                # required
-CF_RECORD_NAME=<fqdn>               # required (e.g. explorator.veraze.io)
-CF_TTL=<seconds>                    # optional, defaults to 300; must be >= 60
-CF_PROXIED=true|false               # optional, defaults to false when unset
-CF_IP_SERVICES=url1,url2,...        # optional comma-separated list; defaults to
+CF2_AUTH_METHOD=token               # optional but recommended; defaults to "token"
+CF2_AUTH_KEY=<cloudflare_api_token> # required
+CF2_ZONE_ID=<zone_id>               # required
+CF2_RECORD_NAME=<fqdn>              # required (e.g. explorator.veraze.io)
+CF2_TTL=<seconds>                   # optional, defaults to 300; must be >= 60
+CF2_PROXIED=true|false              # optional, defaults to false when unset
+CF2_IP_SERVICES=url1,url2,...       # optional comma-separated list; defaults to
                                     #   https://api.ipify.org,
                                     #   https://ipv4.icanhazip.com,
                                     #   https://ipinfo.io/ip
 ```
 
-With token authentication, `CF_AUTH_EMAIL` is not required. The overall configuration logic lives in `cmd/updater/main.go` if you need deeper detail.
+With token authentication, `CF2_AUTH_EMAIL` is not required. The overall configuration logic lives in `cmd/updater/main.go` if you need deeper detail.
 
 ## Build
 

@@ -22,15 +22,15 @@ const (
 	defaultTTL        = 300
 	defaultRecordType = "A"
 
-	envAuthEmail  = "CF_AUTH_EMAIL"
-	envAuthMethod = "CF_AUTH_METHOD"
-	envAuthKey    = "CF_AUTH_KEY"
-	envZoneID     = "CF_ZONE_ID"
-	envRecordName = "CF_RECORD_NAME"
-	envRecordType = "CF_RECORD_TYPE"
-	envTTL        = "CF_TTL"
-	envProxied    = "CF_PROXIED"
-	envIPServices = "CF_IP_SERVICES"
+	envAuthEmail  = "CF2_AUTH_EMAIL"
+	envAuthMethod = "CF2_AUTH_METHOD"
+	envAuthKey    = "CF2_AUTH_KEY"
+	envZoneID     = "CF2_ZONE_ID"
+	envRecordName = "CF2_RECORD_NAME"
+	envRecordType = "CF2_RECORD_TYPE"
+	envTTL        = "CF2_TTL"
+	envProxied    = "CF2_PROXIED"
+	envIPServices = "CF2_IP_SERVICES"
 )
 
 var (
